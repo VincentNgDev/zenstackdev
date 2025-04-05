@@ -748,3 +748,8 @@ function raw(value: String): Any {
  * Marks a field to be strong-typed JSON.
  */
 attribute @json() @@@targetField([TypeDefField])
+
+/**
+ * Provide a list of columns to be removed from the model during generation.
+ */
+attribute @@removeColumn(_ column: String[])

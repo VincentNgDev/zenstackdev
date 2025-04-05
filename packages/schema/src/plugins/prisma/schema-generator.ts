@@ -271,7 +271,8 @@ export class PrismaSchemaGenerator {
 
     private generateModel(prisma: PrismaModel, decl: DataModel) {
         const model = decl.isView ? prisma.addView(decl.name) : prisma.addModel(decl.name);
-        for (const field of decl.fields) {
+        const removeColumns = getRemoveColumn(decl);
+        for (const field of decl.fields.filter((field) => removeColumns.includes(field.name) === false)) {
             if (field.$inheritedFrom) {
                 const inheritedFromDelegate = getInheritedFromDelegate(field);
                 if (
@@ -1039,4 +1040,21 @@ export class PrismaSchemaGenerator {
 
 function isDescendantOf(model: DataModel, superModel: DataModel): boolean {
     return model.superTypes.some((s) => s.ref === superModel || isDescendantOf(s.ref!, superModel));
+}
+
+/**
+ * Get the column names to be removed when generate prisma schema.
+ */
+function getRemoveColumn(decl: DataModel) {
+    const attrRemoveColumn = getAttribute(decl, "@@removeColumn");
+    if (attrRemoveColumn !== undefined) {
+        const removeColumnArg = getAttributeArg(attrRemoveColumn, "column");
+        if (removeColumnArg && isArrayExpr(removeColumnArg)) {
+            return removeColumnArg.items
+                .filter((item): item is StringLiteral => isStringLiteral(item))
+                .map((item) => item.value);
+        }
+    }
+
+    return [];
 }
