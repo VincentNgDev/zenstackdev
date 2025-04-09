@@ -248,7 +248,7 @@ export default class DataModelValidator implements AstValidator<DataModel> {
             return fieldRel.valid && fieldRel.name === thisRelation.name;
         });
 
-        if (oppositeFields.length === 0) {
+        if (oppositeFields.length === 0 && !field.attributes.some((a) => a.decl.ref?.name === '@relationOneSideRef')) {
             const info: DiagnosticInfo<AstNode, string> = {
                 node: field,
                 code: IssueCodes.MissingOppositeRelation,
