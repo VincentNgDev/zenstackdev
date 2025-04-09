@@ -753,3 +753,5 @@ attribute @json() @@@targetField([TypeDefField])
  * Provide a list of columns to be removed from the model during generation.
  */
 attribute @@removeColumn(_ column: String[])
+
+attribute @relationOneSideRef(relationType: String @@@completionHint(["'OneToOne'", "'OneToMany'"]), oppositeFieldName: String?)

@@ -119,12 +119,20 @@ export default class DataModelValidator implements AstValidator<DataModel> {
     }
 
     private parseRelation(field: DataModelField, accept?: ValidationAcceptor) {
+        const relOneSidedRefAttr = field.attributes.find((attr) => attr.decl.ref?.name === '@relationOneSideRef');
         const relAttr = field.attributes.find((attr) => attr.decl.ref?.name === '@relation');
 
         let name: string | undefined;
         let fields: ReferenceExpr[] | undefined;
         let references: ReferenceExpr[] | undefined;
         let valid = true;
+
+        if (!relAttr && relOneSidedRefAttr) {
+            if (accept) {
+                accept('error', '@relationOneSideRef can only be used with @relation', { node: relOneSidedRefAttr });
+            }
+            valid = false;
+        }
 
         if (!relAttr) {
             return { attr: relAttr, name, fields, references, valid: true };

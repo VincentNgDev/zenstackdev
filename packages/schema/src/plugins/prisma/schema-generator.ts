@@ -29,7 +29,7 @@ import {
     NumberLiteral,
     StringLiteral,
 } from '@zenstackhq/language/ast';
-import { getIdFields } from '@zenstackhq/sdk';
+import { getIdFields, hasAttribute } from '@zenstackhq/sdk';
 import { getPrismaVersion } from '@zenstackhq/sdk/prisma';
 import { match, P } from 'ts-pattern';
 
@@ -137,6 +137,8 @@ export class PrismaSchemaGenerator {
 
         const prisma = new PrismaModel();
 
+        const fieldsToAddGroupedByOppRelationModel = this.computeRelationOneSidedRef(this.zmodel);
+
         for (const decl of this.zmodel.declarations) {
             switch (decl.$type) {
                 case DataSource:
@@ -148,7 +150,7 @@ export class PrismaSchemaGenerator {
                     break;
 
                 case DataModel:
-                    this.generateModel(prisma, decl as DataModel);
+                    this.generateModel(prisma, decl as DataModel, fieldsToAddGroupedByOppRelationModel[decl.name]);
                     break;
 
                 case GeneratorDecl:
@@ -269,10 +271,15 @@ export class PrismaSchemaGenerator {
         }
     }
 
-    private generateModel(prisma: PrismaModel, decl: DataModel) {
+    private generateModel(
+        prisma: PrismaModel,
+        decl: DataModel,
+        oneSidedRefRelationFields?: OneSidedRefRelationField[]
+    ) {
         const model = decl.isView ? prisma.addView(decl.name) : prisma.addModel(decl.name);
-        const removeColumns = getRemoveColumn(decl);
-        for (const field of decl.fields.filter((field) => removeColumns.includes(field.name) === false)) {
+
+        const removeColumns = this.getRemoveColumn(decl);
+        for (const field of decl.fields.filter((field) => this.isFieldToRemove(field, removeColumns))) {
             if (field.$inheritedFrom) {
                 const inheritedFromDelegate = getInheritedFromDelegate(field);
                 if (
@@ -288,6 +295,17 @@ export class PrismaSchemaGenerator {
             } else {
                 this.generateModelField(model, field);
             }
+        }
+
+        if (oneSidedRefRelationFields) {
+            oneSidedRefRelationFields.forEach((field) => {
+                if (decl.fields.map(f => f.type.reference?.ref?.name).includes(field.relationModelType)) {
+                    // field already exists, skip
+                    return;
+                }
+
+                this.generateRelationOneSidedRefModelField(model, field.oppositeModelFieldName, field.prismaModelFieldType);
+            });
         }
 
         for (const attr of decl.attributes.filter((attr) => this.isPrismaAttribute(attr))) {
@@ -1036,25 +1054,125 @@ export class PrismaSchemaGenerator {
                 .map((attr) => `/// ${this.zModelGenerator.generate(attr)}`);
         }
     }
+
+    private getRemoveColumn(decl: DataModel) {
+        const attrRemoveColumn = getAttribute(decl, '@@removeColumn');
+        if (attrRemoveColumn !== undefined) {
+            const removeColumnArg = getAttributeArg(attrRemoveColumn, 'column');
+            if (removeColumnArg && isArrayExpr(removeColumnArg)) {
+                return removeColumnArg.items
+                    .filter((item): item is StringLiteral => isStringLiteral(item))
+                    .map((item) => item.value);
+            }
+        }
+
+        return [];
+    }
+
+    private isFieldToRemove(field: DataModelField, removedColumns: string[]) {
+        // check if the field is a relation field or a data model
+        const isNotRelationField = !hasAttribute(field, '@relation') && !isDataModel(field.type.reference?.ref);
+        const isInRemovedColumns = !removedColumns.includes(field.name);
+
+        return isNotRelationField && isInRemovedColumns;
+    }
+
+    private computeRelationOneSidedRef(zmodel: Model) {
+        // Get all data models
+        const models = zmodel.declarations.filter((decl) => decl.$type === DataModel);
+
+        const fieldsToAdd: OneSidedRefRelationField[] = [];
+
+        // Generate the opposite fields of one-sided reference relations
+        models.forEach((model) => {
+            const oneSidedRefRelations = model.fields.filter(
+                (field) =>
+                    isDataModel(field.type.reference?.ref) &&
+                    hasAttribute(field, '@relation') &&
+                    hasAttribute(field, '@relationOneSideRef')
+            );
+
+            const oppositeFieldToAddOfThisModel = oneSidedRefRelations
+                .map((dmf) => {
+                    const oneSidedRefAttr = getAttribute(dmf, '@relationOneSideRef');
+                    if (!oneSidedRefAttr) {
+                        return;
+                    }
+
+                    const thisModel = model.name;
+                    // Type of this model for opposite field
+                    const oppFieldModelType = dmf.type.reference?.ref?.name;
+                    // Relation Type arg from the attribute e.g. OneToOne, OneToMany
+                    const relationTypeArg = getAttributeArg(oneSidedRefAttr, 'relationType');
+                    // Opposite field name arg from the attribute e.g. userId
+                    const oppositeFieldNameArg = getAttributeArg(oneSidedRefAttr, 'oppositeFieldName');
+
+                    let isArray = false;
+                    let isOptional = true;
+                    // Default opposite field name as the decapitalized this model name
+                    let oppModelFieldName = thisModel.charAt(0).toLowerCase() + thisModel.slice(1);
+
+                    if (!relationTypeArg || !oppFieldModelType) {
+                        return;
+                    }
+
+                    if (isStringLiteral(relationTypeArg)) {
+                        switch (relationTypeArg.value.toUpperCase()) {
+                            case 'OneToOne'.toUpperCase():
+                                isArray = false;
+                                isOptional = true;
+                                break;
+                            case 'OneToMany'.toUpperCase():
+                                isArray = true;
+                                isOptional = true;
+                                break;
+                            default:
+                                return;
+                        }
+                    } else {
+                        return;
+                    }
+
+                    // Check if the opposite field name is provided
+                    // If not, use the decapitalized this model name as the default
+                    if (isStringLiteral(oppositeFieldNameArg) && oppositeFieldNameArg.value.length > 0) {
+                        oppModelFieldName = oppositeFieldNameArg.value;
+                    }
+
+                    const modelFieldType = new ModelFieldType(oppFieldModelType, isArray, isOptional);
+
+                    return {
+                        relationModelType: thisModel,
+                        oppositeFieldModelType: oppFieldModelType,
+                        oppositeModelFieldName: oppModelFieldName,
+                        prismaModelFieldType: modelFieldType,
+                    };
+                })
+                .filter((map) => map !== undefined);
+
+            fieldsToAdd.push(...oppositeFieldToAddOfThisModel);
+        });
+
+        return Object.groupBy(fieldsToAdd, ({ oppositeFieldModelType }) => oppositeFieldModelType);
+    }
+
+    private generateRelationOneSidedRefModelField(
+        model: PrismaDataModel,
+        fieldName: string,
+        prismaModelFieldType: ModelFieldType
+    ) {
+        const result = model.addField(fieldName, prismaModelFieldType);
+        return result;
+    }
 }
+
+type OneSidedRefRelationField = {
+    relationModelType: string;
+    oppositeFieldModelType: string;
+    oppositeModelFieldName: string;
+    prismaModelFieldType: ModelFieldType,
+};
 
 function isDescendantOf(model: DataModel, superModel: DataModel): boolean {
     return model.superTypes.some((s) => s.ref === superModel || isDescendantOf(s.ref!, superModel));
-}
-
-/**
- * Get the column names to be removed when generate prisma schema.
- */
-function getRemoveColumn(decl: DataModel) {
-    const attrRemoveColumn = getAttribute(decl, "@@removeColumn");
-    if (attrRemoveColumn !== undefined) {
-        const removeColumnArg = getAttributeArg(attrRemoveColumn, "column");
-        if (removeColumnArg && isArrayExpr(removeColumnArg)) {
-            return removeColumnArg.items
-                .filter((item): item is StringLiteral => isStringLiteral(item))
-                .map((item) => item.value);
-        }
-    }
-
-    return [];
 }
