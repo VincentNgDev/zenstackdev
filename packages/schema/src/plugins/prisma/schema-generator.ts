@@ -279,7 +279,8 @@ export class PrismaSchemaGenerator {
         const model = decl.isView ? prisma.addView(decl.name) : prisma.addModel(decl.name);
 
         const removeColumns = this.getRemoveColumn(decl);
-        for (const field of decl.fields.filter((field) => this.isFieldToRemove(field, removeColumns))) {
+
+        for (const field of decl.fields.filter((field) => this.isFieldToRetain(field, removeColumns))) {
             if (field.$inheritedFrom) {
                 const inheritedFromDelegate = getInheritedFromDelegate(field);
                 if (
@@ -301,6 +302,7 @@ export class PrismaSchemaGenerator {
             oneSidedRefRelationFields.forEach((field) => {
                 if (decl.fields.map(f => f.type.reference?.ref?.name).includes(field.relationModelType)) {
                     // field already exists, skip
+                    console.warn(`Field ${field.relationModelType} already exists in model ${decl.name}, skipping...`);
                     return;
                 }
 
@@ -1069,12 +1071,11 @@ export class PrismaSchemaGenerator {
         return [];
     }
 
-    private isFieldToRemove(field: DataModelField, removedColumns: string[]) {
-        // check if the field is a relation field or a data model
-        const isNotRelationField = !hasAttribute(field, '@relation') && !isDataModel(field.type.reference?.ref);
-        const isInRemovedColumns = !removedColumns.includes(field.name);
+    private isFieldToRetain(field: DataModelField, removedColumns: string[]) {
+        const isJoiningField = hasAttribute(field, '@relation') || isDataModel(field.type.reference?.ref);
+        const isNotInRemovedColumns = !removedColumns.includes(field.name);
 
-        return isNotRelationField && isInRemovedColumns;
+        return isJoiningField || isNotInRemovedColumns;
     }
 
     private computeRelationOneSidedRef(zmodel: Model) {
@@ -1098,13 +1099,23 @@ export class PrismaSchemaGenerator {
                     if (!oneSidedRefAttr) {
                         return;
                     }
-
+                    /**
+                     * Example: this model is Seed and the opposite model is SeedData
+                     * model Seed {
+                     *  seedData
+                     *  seedData String @relationOneSideRef(relationType: "OneToOne", oppositeFieldName: "seedId")
+                     * }
+                     * 
+                     * model SeedData {
+                     *  seed Seed?
+                     * }
+                     */
                     const thisModel = model.name;
-                    // Type of this model for opposite field
+                    // Opposite model type
                     const oppFieldModelType = dmf.type.reference?.ref?.name;
                     // Relation Type arg from the attribute e.g. OneToOne, OneToMany
                     const relationTypeArg = getAttributeArg(oneSidedRefAttr, 'relationType');
-                    // Opposite field name arg from the attribute e.g. userId
+                    // Opposite field name arg from the attribute e.g. seed
                     const oppositeFieldNameArg = getAttributeArg(oneSidedRefAttr, 'oppositeFieldName');
 
                     let isArray = false;
@@ -1139,13 +1150,14 @@ export class PrismaSchemaGenerator {
                         oppModelFieldName = oppositeFieldNameArg.value;
                     }
 
-                    const modelFieldType = new ModelFieldType(oppFieldModelType, isArray, isOptional);
+                    // Prisma model field type of opposite field
+                    const oppModelFieldType = new ModelFieldType(thisModel, isArray, isOptional);
 
                     return {
                         relationModelType: thisModel,
                         oppositeFieldModelType: oppFieldModelType,
                         oppositeModelFieldName: oppModelFieldName,
-                        prismaModelFieldType: modelFieldType,
+                        prismaModelFieldType: oppModelFieldType,
                     };
                 })
                 .filter((map) => map !== undefined);
@@ -1153,7 +1165,18 @@ export class PrismaSchemaGenerator {
             fieldsToAdd.push(...oppositeFieldToAddOfThisModel);
         });
 
-        return Object.groupBy(fieldsToAdd, ({ oppositeFieldModelType }) => oppositeFieldModelType);
+        const groupedByOppFieldModelType = fieldsToAdd.reduce((result, fieldToAdd) => {
+            const { oppositeFieldModelType } = fieldToAdd;
+
+            if (!result[oppositeFieldModelType]) {
+                result[oppositeFieldModelType] = [];
+            }
+
+            result[oppositeFieldModelType].push(fieldToAdd);
+            return result;
+        }, {} as Record<string, OneSidedRefRelationField[]>);
+
+        return groupedByOppFieldModelType;
     }
 
     private generateRelationOneSidedRefModelField(

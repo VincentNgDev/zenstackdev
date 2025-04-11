@@ -4,6 +4,7 @@ import {
     DataModelField,
     ReferenceExpr,
     isDataModel,
+    isDataModelField,
     isEnum,
     isStringLiteral,
     isTypeDef,
@@ -248,7 +249,34 @@ export default class DataModelValidator implements AstValidator<DataModel> {
             return fieldRel.valid && fieldRel.name === thisRelation.name;
         });
 
-        if (oppositeFields.length === 0 && !field.attributes.some((a) => a.decl.ref?.name === '@relationOneSideRef')) {
+        if (oppositeFields.length === 0 && hasAttribute(field, "@relationOneSideRef")) {
+            const relOneSidedRefAttr = field.attributes.find((attr) => attr.decl.ref?.name === '@relationOneSideRef');
+            const relAttr = field.attributes.find((attr) => attr.decl.ref?.name === '@relation');
+            if (relOneSidedRefAttr && relAttr) {
+                const fieldRefArg = relAttr.args.find((arg) => arg.name === 'fields');
+                const relationTypeArg = relOneSidedRefAttr.args.find((arg) => arg.name === 'relationType');
+                if (relationTypeArg && isStringLiteral(relationTypeArg.value) && fieldRefArg) {
+                    if (relationTypeArg.value.value.toUpperCase() === 'OneToOne'.toUpperCase()) {
+                        const fieldRefs = ((fieldRefArg.value as ArrayExpr).items as ReferenceExpr[])
+                        .filter((ref) => isDataModelField(ref.target.ref))
+                        .map((ref) => ref.target.$refText);
+                        const uniqueFieldNames = contextModel.fields.filter((f) =>
+                            f.attributes.find((attr) => attr.decl.ref?.name === '@unique')
+                        ).map((f) => f.name);
+
+                        const found = fieldRefs.some(r=> uniqueFieldNames.includes(r));
+                        if (!found) {
+                            accept('error', `One to One relationship requires the reference field to have "@unique" attribute`, {
+                                node: field,
+                            });
+                        }
+                    }
+                }
+            }
+            return;
+        }
+
+        if (oppositeFields.length === 0) {
             const info: DiagnosticInfo<AstNode, string> = {
                 node: field,
                 code: IssueCodes.MissingOppositeRelation,
