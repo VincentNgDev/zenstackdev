@@ -754,4 +754,4 @@ attribute @json() @@@targetField([TypeDefField])
  */
 attribute @@removeColumn(_ column: String[])
 
-attribute @relationOneSideRef(relationType: String @@@completionHint(["'OneToOne'", "'OneToMany'"]), oppositeFieldName: String?)
+attribute @relationOneSideRef(_ relationType: String @@@completionHint(["'OneToOne'", "'ManyToOne'"]), _ oppositeFieldName: String?)

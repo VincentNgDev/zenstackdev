@@ -1133,9 +1133,9 @@ export class PrismaSchemaGenerator {
                                 isArray = false;
                                 isOptional = true;
                                 break;
-                            case 'OneToMany'.toUpperCase():
+                            case 'ManyToOne'.toUpperCase():
                                 isArray = true;
-                                isOptional = true;
+                                isOptional = false; // No optional array
                                 break;
                             default:
                                 return;
